@@ -422,6 +422,16 @@ def analyze_with_deepseek(price_data):
             temperature=0.1
         )
 
+        # 修复：添加检查response是否存在以及是否包含有效内容
+        if not response or not hasattr(response, 'choices') or not response.choices:
+            print("DeepSeek响应为空或无效")
+            return create_fallback_signal(price_data)
+
+        # 检查响应是否有内容
+        if not response.choices[0] or not hasattr(response.choices[0], 'message'):
+            print("DeepSeek响应消息为空或无效")
+            return create_fallback_signal(price_data)
+
         # 安全解析JSON
         result = response.choices[0].message.content
         print(f"DeepSeek原始回复: {result}")
@@ -465,6 +475,8 @@ def analyze_with_deepseek(price_data):
 
     except Exception as e:
         print(f"DeepSeek分析失败: {e}")
+        import traceback
+        traceback.print_exc()
         return create_fallback_signal(price_data)
 
 
