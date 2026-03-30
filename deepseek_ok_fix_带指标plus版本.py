@@ -411,47 +411,115 @@ def analyze_with_deepseek(price_data):
     """
 
     try:
-        response = deepseek_client.chat.completions.create(
-            model="deepseek-chat",
-            messages=[
-                {"role": "system",
-                 "content": f"您是一位专业的交易员，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线形态和技术指标做出判断，并严格遵循JSON格式要求。"},
-                {"role": "user", "content": prompt}
-            ],
-            stream=False,
-            temperature=0.1
-        )
-
-        # 修复：添加检查response是否存在以及是否包含有效内容
-        if not response or not hasattr(response, 'choices') or not response.choices:
-            print("DeepSeek响应为空或无效")
+        print("开始调用DeepSeek API...")
+        
+        # 添加更多的安全检查和异常处理
+        response = None
+        try:
+            print("正在发送请求到DeepSeek API...")
+            response = deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system",
+                     "content": f"您是一位专业的交易员，专注于{TRADE_CONFIG['timeframe']}周期趋势分析。请结合K线形态和技术指标做出判断，并严格遵循JSON格式要求。"},
+                    {"role": "user", "content": prompt}
+                ],
+                stream=False,
+                temperature=0.1
+            )
+            print("API请求成功完成")
+        except Exception as api_error:
+            print(f"API调用失败: {api_error}")
+            import traceback
+            traceback.print_exc()
             return create_fallback_signal(price_data)
 
-        # 检查响应是否有内容
-        if not response.choices[0] or not hasattr(response.choices[0], 'message'):
-            print("DeepSeek响应消息为空或无效")
+        print(f"API响应类型: {type(response)}")
+        
+        # 检查响应是否存在
+        if response is None:
+            print("❌ 响应为None，使用备用信号")
+            return create_fallback_signal(price_data)
+        
+        print(f"Response属性: {dir(response) if hasattr(response, '__dict__') else 'No dir'}")
+        
+        # 检查响应是否具有所需属性
+        if not hasattr(response, 'choices'):
+            print("❌ 响应没有choices属性，使用备用信号")
+            print(f"实际响应内容: {response}")
+            return create_fallback_signal(price_data)
+            
+        # 检查choices是否存在和是否非空
+        choices = response.choices
+        print(f"choices类型: {type(choices)}, 长度: {len(choices) if choices else 'None'}")
+        
+        if choices is None or len(choices) == 0:
+            print("❌ 响应choices为空或None，使用备用信号")
+            return create_fallback_signal(price_data)
+            
+        # 检查第一个choice
+        print(f"choices[0]类型: {type(choices[0]) if len(choices) > 0 else 'Index out of range'}")
+        
+        if len(choices) == 0:
+            print("❌ choices列表为空，使用备用信号")
+            return create_fallback_signal(price_data)
+        
+        first_choice = choices[0]  # 这里是可能出现错误的地方
+        print(f"first_choice: {first_choice}, 类型: {type(first_choice)}")
+        
+        if first_choice is None:
+            print("❌ 第一个choice为None，使用备用信号")
+            return create_fallback_signal(price_data)
+            
+        # 检查choice是否有message属性
+        if not hasattr(first_choice, 'message'):
+            print("❌ 第一个choice没有message属性，使用备用信号")
+            print(f"first_choice属性: {dir(first_choice) if hasattr(first_choice, '__dict__') else 'No dir'}")
+            return create_fallback_signal(price_data)
+            
+        # 检查message是否为None
+        message = first_choice.message
+        print(f"message: {message}, 类型: {type(message)}")
+        
+        if message is None:
+            print("❌ message为None，使用备用信号")
+            return create_fallback_signal(price_data)
+            
+        # 检查message是否有content属性
+        if not hasattr(message, 'content'):
+            print("❌ message没有content属性，使用备用信号")
+            print(f"message属性: {dir(message) if hasattr(message, '__dict__') else 'No dir'}")
+            return create_fallback_signal(price_data)
+            
+        # 检查content是否为None
+        content = message.content
+        print(f"content: {content[:200] if content else 'None'}, 类型: {type(content)}")
+        
+        if content is None:
+            print("❌ content为None，使用备用信号")
             return create_fallback_signal(price_data)
 
-        # 安全解析JSON
-        result = response.choices[0].message.content
-        print(f"DeepSeek原始回复: {result}")
+        print(f"✅ DeepSeek原始回复: {content}")
 
         # 提取JSON部分
-        start_idx = result.find('{')
-        end_idx = result.rfind('}') + 1
+        start_idx = content.find('{')
+        end_idx = content.rfind('}') + 1
 
         if start_idx != -1 and end_idx != 0:
-            json_str = result[start_idx:end_idx]
+            json_str = content[start_idx:end_idx]
             signal_data = safe_json_parse(json_str)
 
             if signal_data is None:
+                print("❌ JSON解析失败，使用备用信号")
                 signal_data = create_fallback_signal(price_data)
         else:
+            print("❌ 未找到JSON格式，使用备用信号")
             signal_data = create_fallback_signal(price_data)
 
         # 验证必需字段
         required_fields = ['signal', 'reason', 'stop_loss', 'take_profit', 'confidence']
         if not all(field in signal_data for field in required_fields):
+            print("❌ 缺少必要字段，使用备用信号")
             signal_data = create_fallback_signal(price_data)
 
         # 保存信号到历史记录
@@ -474,7 +542,7 @@ def analyze_with_deepseek(price_data):
         return signal_data
 
     except Exception as e:
-        print(f"DeepSeek分析失败: {e}")
+        print(f"❌ DeepSeek分析失败: {e}")
         import traceback
         traceback.print_exc()
         return create_fallback_signal(price_data)
