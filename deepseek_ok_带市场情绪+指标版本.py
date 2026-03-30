@@ -1,3 +1,4 @@
+# 修复空仓平仓问题
 import os
 import time
 import schedule
@@ -32,9 +33,9 @@ exchange = ccxt.okx({
 TRADE_CONFIG = {
     'symbol': 'BTC/USDT:USDT',  # OKX的合约符号格式
     'leverage': 10,  # 杠杆倍数,只影响保证金不影响下单价值
-    'timeframe': '15m',  # 使用15分钟K线
+    'timeframe': '5m',  # 使用5分钟K线
     'test_mode': False,  # 测试模式
-    'data_points': 96,  # 24小时数据（96根15分钟K线）
+    'data_points': 96,  # 24小时数据（96根5分钟K线）
     'analysis_periods': {
         'short_term': 20,  # 短期均线
         'medium_term': 50,  # 中期均线
@@ -648,6 +649,14 @@ def analyze_with_deepseek(price_data):
     - RSI状态: {price_data['technical_data'].get('rsi', 0):.1f} ({'超买' if price_data['technical_data'].get('rsi', 0) > 70 else '超卖' if price_data['technical_data'].get('rsi', 0) < 30 else '中性'})
     - MACD方向: {price_data['trend_analysis'].get('macd', 'N/A')}
 
+    【止损止盈策略 - 5分钟周期】
+    - 多头止损：最近支撑位下方0.8-1.2%
+    - 空头止损：最近阻力位上方0.8-1.2%
+    - 止盈：风险回报比至少1:2
+    - 高信心信号：止损0.8%，止盈1.6%
+    - 中信心信号：止损1.0%，止盈2.0%
+    - 低信心信号：止损1.2%，止盈2.4%
+
     【智能仓位管理规则 - 必须遵守】
 
     1. **减少过度保守**：
@@ -793,32 +802,34 @@ def execute_intelligent_trade(signal_data, price_data):
         # 执行交易逻辑 - 支持同方向加仓减仓
         if signal_data['signal'] == 'BUY':
             if current_position and current_position['side'] == 'short':
-                # 先检查空头持仓是否真实存在且数量正确
+                # 平空仓并开多仓
                 if current_position['size'] > 0:
                     print(f"平空仓 {current_position['size']:.2f} 张并开多仓 {position_size:.2f} 张...")
-                    # 平空仓
-                    exchange.create_market_order(
+                    # 平空仓：买入相同数量的合约
+                    close_order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
-                        'buy',
+                        'buy',  # 买入平空仓
                         current_position['size'],
                         params={'reduceOnly': True, 'tag': '60bb4a8d3416BCDE'}
                     )
                     time.sleep(1)
-                    # 开多仓
-                    exchange.create_market_order(
+                    # 开多仓：买入指定数量的合约
+                    open_order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
-                        'buy',
+                        'buy',  # 买入开多仓
                         position_size,
                         params={'tag': '60bb4a8d3416BCDE'}
                     )
+                    print(f"✅ 平空仓完成: {close_order['id']}, 开多仓完成: {open_order['id']}")
                 else:
                     print("⚠️ 检测到空头持仓但数量为0，直接开多仓")
-                    exchange.create_market_order(
+                    order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
                         'buy',
                         position_size,
                         params={'tag': '60bb4a8d3416BCDE'}
                     )
+                    print(f"✅ 开多仓完成: {order['id']}")
 
             elif current_position and current_position['side'] == 'long':
                 # 同方向，检查是否需要调整仓位
@@ -830,64 +841,69 @@ def execute_intelligent_trade(signal_data, price_data):
                         add_size = round(size_diff, 2)
                         print(
                             f"多仓加仓 {add_size:.2f} 张 (当前:{current_position['size']:.2f} → 目标:{position_size:.2f})")
-                        exchange.create_market_order(
+                        order = exchange.create_market_order(
                             TRADE_CONFIG['symbol'],
                             'buy',
                             add_size,
                             params={'tag': '60bb4a8d3416BCDE'}
                         )
+                        print(f"✅ 多仓加仓完成: {order['id']}")
                     else:
                         # 减仓
                         reduce_size = round(abs(size_diff), 2)
                         print(
                             f"多仓减仓 {reduce_size:.2f} 张 (当前:{current_position['size']:.2f} → 目标:{position_size:.2f})")
-                        exchange.create_market_order(
+                        order = exchange.create_market_order(
                             TRADE_CONFIG['symbol'],
                             'sell',
                             reduce_size,
                             params={'reduceOnly': True, 'tag': '60bb4a8d3416BCDE'}
                         )
+                        print(f"✅ 多仓减仓完成: {order['id']}")
                 else:
                     print(
                         f"已有多头持仓，仓位合适保持现状 (当前:{current_position['size']:.2f}, 目标:{position_size:.2f})")
             else:
                 # 无持仓时开多仓
                 print(f"开多仓 {position_size:.2f} 张...")
-                exchange.create_market_order(
+                order = exchange.create_market_order(
                     TRADE_CONFIG['symbol'],
                     'buy',
                     position_size,
                     params={'tag': '60bb4a8d3416BCDE'}
                 )
+                print(f"✅ 开多仓完成: {order['id']}")
 
         elif signal_data['signal'] == 'SELL':
             if current_position and current_position['side'] == 'long':
-                # 先检查多头持仓是否真实存在且数量正确
+                # 平多仓并开空仓
                 if current_position['size'] > 0:
                     print(f"平多仓 {current_position['size']:.2f} 张并开空仓 {position_size:.2f} 张...")
-                    # 平多仓
-                    exchange.create_market_order(
+                    # 平多仓：卖出相同数量的合约
+                    close_order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
-                        'sell',
+                        'sell',  # 卖出平多仓
                         current_position['size'],
                         params={'reduceOnly': True, 'tag': '60bb4a8d3416BCDE'}
                     )
                     time.sleep(1)
-                    # 开空仓
-                    exchange.create_market_order(
+                    # 开空仓：卖出指定数量的合约
+                    open_order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
-                        'sell',
+                        'sell',  # 卖出开空仓
                         position_size,
                         params={'tag': '60bb4a8d3416BCDE'}
                     )
+                    print(f"✅ 平多仓完成: {close_order['id']}, 开空仓完成: {open_order['id']}")
                 else:
                     print("⚠️ 检测到多头持仓但数量为0，直接开空仓")
-                    exchange.create_market_order(
+                    order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
                         'sell',
                         position_size,
                         params={'tag': '60bb4a8d3416BCDE'}
                     )
+                    print(f"✅ 开空仓完成: {order['id']}")
 
             elif current_position and current_position['side'] == 'short':
                 # 同方向，检查是否需要调整仓位
@@ -899,35 +915,38 @@ def execute_intelligent_trade(signal_data, price_data):
                         add_size = round(size_diff, 2)
                         print(
                             f"空仓加仓 {add_size:.2f} 张 (当前:{current_position['size']:.2f} → 目标:{position_size:.2f})")
-                        exchange.create_market_order(
+                        order = exchange.create_market_order(
                             TRADE_CONFIG['symbol'],
                             'sell',
                             add_size,
                             params={'tag': '60bb4a8d3416BCDE'}
                         )
+                        print(f"✅ 空仓加仓完成: {order['id']}")
                     else:
                         # 减仓
                         reduce_size = round(abs(size_diff), 2)
                         print(
                             f"空仓减仓 {reduce_size:.2f} 张 (当前:{current_position['size']:.2f} → 目标:{position_size:.2f})")
-                        exchange.create_market_order(
+                        order = exchange.create_market_order(
                             TRADE_CONFIG['symbol'],
                             'buy',
                             reduce_size,
                             params={'reduceOnly': True, 'tag': '60bb4a8d3416BCDE'}
                         )
+                        print(f"✅ 空仓减仓完成: {order['id']}")
                 else:
                     print(
                         f"已有空头持仓，仓位合适保持现状 (当前:{current_position['size']:.2f}, 目标:{position_size:.2f})")
             else:
                 # 无持仓时开空仓
                 print(f"开空仓 {position_size:.2f} 张...")
-                exchange.create_market_order(
+                order = exchange.create_market_order(
                     TRADE_CONFIG['symbol'],
                     'sell',
                     position_size,
                     params={'tag': '60bb4a8d3416BCDE'}
                 )
+                print(f"✅ 开空仓完成: {order['id']}")
 
         elif signal_data['signal'] == 'HOLD':
             print("建议观望，不执行交易")
@@ -946,19 +965,21 @@ def execute_intelligent_trade(signal_data, price_data):
             print("尝试直接开新仓...")
             try:
                 if signal_data['signal'] == 'BUY':
-                    exchange.create_market_order(
+                    order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
                         'buy',
                         position_size,
                         params={'tag': '60bb4a8d3416BCDE'}
                     )
+                    print(f"✅ 直接开多仓完成: {order['id']}")
                 elif signal_data['signal'] == 'SELL':
-                    exchange.create_market_order(
+                    order = exchange.create_market_order(
                         TRADE_CONFIG['symbol'],
                         'sell',
                         position_size,
                         params={'tag': '60bb4a8d3416BCDE'}
                     )
+                    print(f"✅ 直接开空仓完成: {order['id']}")
                 print("直接开仓成功")
             except Exception as e2:
                 print(f"直接开仓也失败: {e2}")
@@ -988,13 +1009,13 @@ def analyze_with_deepseek_with_retry(price_data, max_retries=2):
 
 
 def wait_for_next_period():
-    """等待到下一个15分钟整点"""
+    """等待到下一个5分钟整点"""
     now = datetime.now()
     current_minute = now.minute
     current_second = now.second
 
-    # 计算下一个整点时间（00, 15, 30, 45分钟）
-    next_period_minute = ((current_minute // 15) + 1) * 15
+    # 计算下一个5分钟整点时间（00, 05, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55分钟）
+    next_period_minute = ((current_minute // 5) + 1) * 5
     if next_period_minute == 60:
         next_period_minute = 0
 
@@ -1066,7 +1087,7 @@ def main():
         print("交易所初始化失败，程序退出")
         return
 
-    print("执行频率: 每15分钟整点执行")
+    print("执行频率: 每5分钟整点执行")
 
     # 循环执行（不使用schedule）
     while True:
