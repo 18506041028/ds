@@ -49,6 +49,20 @@ exchange = ccxt.okx({
 
 SYMBOLS = ['BTC/USDT:USDT','ETH/USDT:USDT','XAU/USDT:USDT']
 
+# 加载市场信息
+try:
+    markets = exchange.load_markets()
+except Exception as e:
+    log(f"⚠️ 加载市场信息失败: {e}")
+    markets = {}
+
+# 定义最小订单量映射
+MIN_ORDER_SIZE = {
+    'BTC/USDT:USDT': 0.1,  # BTC最小订单量
+    'ETH/USDT:USDT': 1,   # ETH最小订单量
+    'XAU/USDT:USDT': 10,     # XAU最小订单量
+}
+
 # ======================
 # 💰 资金管理
 # ======================
@@ -212,18 +226,35 @@ def drawdown(eq):
     return (peak_equity - eq) / peak_equity
 
 # ======================
-# 🚀 下单（带日志）
+# 🚀 下单（带日志）- 修复最小订单量问题
 # ======================
 def order(symbol, side, size, price, atr, p):
     try:
         stop_distance = p['atr_mult'] * atr
         balance = get_balance()
 
-        size = min(size, balance * MAX_POSITION_RATIO / price)
+        # 获取该交易对的最小订单量
+        min_size = MIN_ORDER_SIZE.get(symbol, 0.01)
+        
+        # 调整订单大小以满足最小要求
+        adjusted_size = max(size, min_size)
+        
+        # 确保订单不超过最大允许值
+        max_size = balance * MAX_POSITION_RATIO / price
+        final_size = min(adjusted_size, max_size)
 
-        exchange.create_market_order(symbol, side.lower(), size)
+        # 检查是否有足够资金执行订单
+        cost = final_size * price
+        if cost > balance * 0.95:  # 保留5%的资金作为缓冲
+            log(f"⚠️ 资金不足，无法下单 {symbol} 需要 {cost:.2f} USDT，可用 {balance:.2f} USDT")
+            return
 
-        log(f"🚀 下单 {symbol} {side} 数量:{size:.4f}")
+        log(f"📈 尝试下单 {symbol} {side} 数量: {size:.4f} -> 调整为: {final_size:.4f}")
+
+        # 执行订单
+        exchange.create_market_order(symbol, side.lower(), final_size)
+
+        log(f"🚀 下单成功 {symbol} {side} 数量: {final_size:.4f}")
 
     except Exception as e:
         log(f"❌ 下单失败 {symbol} {e}")
@@ -338,16 +369,24 @@ def trade():
 
         capital = balance * abs(weights[sym])
         size = (capital * LEVERAGE) / price
+        
+        # 调整大小以满足最小订单量要求
+        min_size = MIN_ORDER_SIZE.get(sym, 0.01)
+        size = max(size, min_size)
 
         order(sym, side, size, price, atr, p)
 
 # ======================
-# ⏱️ 定时
+# ⏱️ 定时 - 修复异常处理
 # ======================
 def wait():
-    now = datetime.now(timezone.utc)
-    sleep = (15-now.minute%15)*60
-    time.sleep(sleep)
+    try:
+        now = datetime.now(timezone.utc)
+        sleep = (15-now.minute%15)*60
+        time.sleep(sleep)
+    except KeyboardInterrupt:
+        log("⚠️ 用户中断程序")
+        raise  # 重新抛出异常以正确终止程序
 
 # ======================
 # ▶️ 主循环（永不停机）
@@ -356,6 +395,9 @@ while True:
     try:
         trade()
         wait()
+    except KeyboardInterrupt:
+        log("🛑 程序被用户中断")
+        break
     except Exception as e:
         log(f"❌ 主循环错误 {e}")
         import traceback
